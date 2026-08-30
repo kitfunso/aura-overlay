@@ -85,6 +85,9 @@ public static class RingHost {
     [DllImport("user32.dll")] private static extern bool SetLayeredWindowAttributes(IntPtr h, uint key, byte alpha, uint flags);
     [DllImport("user32.dll")] private static extern bool ShowWindow(IntPtr h, int cmd);
     [DllImport("user32.dll")] private static extern bool SetWindowPos(IntPtr h, IntPtr after, int x, int y, int w, int hgt, uint flags);
+    [DllImport("user32.dll")] private static extern IntPtr BeginDeferWindowPos(int count);
+    [DllImport("user32.dll")] private static extern IntPtr DeferWindowPos(IntPtr ctx, IntPtr h, IntPtr after, int x, int y, int w, int hgt, uint flags);
+    [DllImport("user32.dll")] private static extern bool EndDeferWindowPos(IntPtr ctx);
     [DllImport("user32.dll")] private static extern bool IsWindow(IntPtr h);
     [DllImport("user32.dll")] private static extern bool IsIconic(IntPtr h);
     [DllImport("user32.dll")] private static extern int SetWindowRgn(IntPtr h, IntPtr rgn, bool redraw);
@@ -149,6 +152,7 @@ public static class RingHost {
     private class Tag { public long Hwnd; public uint Pid; public long TaggedAt; }
     private static string tagsPath;
     private static List<Tag> tags = new List<Tag>();
+    private static IntPtr deferCtx;   // one DeferWindowPos transaction per tick; zero outside Tick's update loop
 
     private static IntPtr Proc(IntPtr hWnd, uint msg, IntPtr wParam, IntPtr lParam) {
         if (msg == WM_TIMER && hWnd == host) { Tick(); return IntPtr.Zero; }
@@ -254,16 +258,36 @@ public static class RingHost {
         // DWMWA_EXTENDED_FRAME_BOUNDS (9): the VISUAL rect; GetWindowRect floats.
         if (DwmGetWindowAttribute(ring.Target, 9, out r, Marshal.SizeOf(typeof(RECT))) != 0) return;
         if (!ring.HaveLast || r.Left != ring.Last.Left || r.Top != ring.Last.Top || r.Right != ring.Last.Right || r.Bottom != ring.Last.Bottom) {
-            ring.Last = r; ring.HaveLast = true;
             int t = thickness;
+            // The region is in window-relative coordinates: a pure MOVE keeps
+            // the ring's shape, so only a SIZE change rebuilds it. Rebuilding
+            // on every move burned 10% of a core with 7 windows dragging
+            // (SetWindowRgn forces a full repaint each time); with SWP_NOSIZE
+            // a move is one cheap SetWindowPos.
+            bool sizeChanged = !ring.HaveLast
+                || (r.Right - r.Left) != (ring.Last.Right - ring.Last.Left)
+                || (r.Bottom - r.Top) != (ring.Last.Bottom - ring.Last.Top);
+            ring.Last = r; ring.HaveLast = true;
             int x = r.Left - t, y = r.Top - t;
             int w = (r.Right - r.Left) + 2 * t, h = (r.Bottom - r.Top) + 2 * t;
-            SetWindowPos(ring.Hwnd, IntPtr.Zero, x, y, w, h, 0x10 | 0x4);  // NOACTIVATE | NOZORDER
-            IntPtr rgn = CreateRectRgn(0, 0, w, h);
-            IntPtr inner = CreateRectRgn(t, t, w - t, h - t);
-            CombineRgn(rgn, rgn, inner, 4);  // RGN_DIFF: the border ring only
-            DeleteObject(inner);
-            SetWindowRgn(ring.Hwnd, rgn, true);  // the system owns rgn from here
+            uint flags = 0x10u | 0x4u;               // NOACTIVATE | NOZORDER
+            if (!sizeChanged) flags |= 0x1u;         // SWP_NOSIZE
+            // Inside the tick, moves join ONE DeferWindowPos transaction:
+            // 7 dragging rings cost one composition pass, not seven.
+            if (deferCtx != IntPtr.Zero && !sizeChanged) {
+                IntPtr next = DeferWindowPos(deferCtx, ring.Hwnd, IntPtr.Zero, x, y, w, h, flags);
+                if (next != IntPtr.Zero) deferCtx = next;
+                else SetWindowPos(ring.Hwnd, IntPtr.Zero, x, y, w, h, flags);
+            } else {
+                SetWindowPos(ring.Hwnd, IntPtr.Zero, x, y, w, h, flags);
+            }
+            if (sizeChanged) {
+                IntPtr rgn = CreateRectRgn(0, 0, w, h);
+                IntPtr inner = CreateRectRgn(t, t, w - t, h - t);
+                CombineRgn(rgn, rgn, inner, 4);      // RGN_DIFF: the border ring only
+                DeleteObject(inner);
+                SetWindowRgn(ring.Hwnd, rgn, true);  // the system owns rgn from here
+            }
         }
         if (!ring.Shown) { ShowWindow(ring.Hwnd, 8); ring.Shown = true; }  // SW_SHOWNA
     }
@@ -397,10 +421,17 @@ public static class RingHost {
         CheckRingsFile();
         PruneTags();
         List<long> keys = new List<long>(rings.Keys);
+        deferCtx = (keys.Count > 0) ? BeginDeferWindowPos(keys.Count) : IntPtr.Zero;
         foreach (long key in keys) {
             Ring ring;
             if (rings.TryGetValue(key, out ring)) UpdateRing(key, ring);
         }
+        if (deferCtx != IntPtr.Zero && !EndDeferWindowPos(deferCtx)) {
+            // a failed transaction (e.g. a ring destroyed mid-tick) dropped
+            // this tick's moves: force a re-apply on the next tick
+            foreach (Ring rr in rings.Values) rr.HaveLast = false;
+        }
+        deferCtx = IntPtr.Zero;
     }
 
     private static void Quit() {
