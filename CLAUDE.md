@@ -40,8 +40,9 @@ windows). Docs: `docs/ARCHITECTURE.md`; spike evidence: `aura/docs/LANE-B.md`.
 - Plain Node.js + PowerShell 5.1 (no `&&`, no ternary in ps1).
 - Small files, verb_noun function names, no abbreviations.
 - No em dashes in UI strings or commit messages.
-- Atomic writes for shared JSON files (temp + rename); readers tolerate a
-  missing or torn file by keeping their last state.
+- Shared JSON files: exactly ONE writer per file (two read-modify-write
+  writers can silently lose an update), atomic writes (temp + rename);
+  readers tolerate a missing or torn file by keeping their last state.
 
 ## Critical Files
 - `src/color.js` - rule 1. Read aura's ARCHITECTURE "The Color Contract"
@@ -62,5 +63,7 @@ windows). Docs: `docs/ARCHITECTURE.md`; spike evidence: `aura/docs/LANE-B.md`.
 - Ringing rainbow-owned terminal windows: Lane A's hue-cycle already marks
   them "no project"; a static ring on top contradicts it. The brain skips
   windows whose `frameOwner` entry is "rainbow".
-- Trusting a hwnd across time: handles recycle. Tags persist hwnd + pid and
-  are pruned the moment the window or process is gone.
+- Trusting a hwnd across time: handles recycle. Tags and ring entries carry
+  hwnd + pid; the renderer verifies the pid still owns the hwnd before
+  ringing, and everything is pruned the moment the window or process is
+  gone.
