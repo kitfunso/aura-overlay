@@ -11,6 +11,12 @@ function iso(ms) { return new Date(ms).toISOString(); }
 
 const CONFIG = { paletteProcesses: ["chrome", "slack"] };
 
+test("the shipped palette default is empty", function () {
+  // A non-empty default rings apps the user never asked for: with terminals
+  // rainbow-owned or unseen, the only rings on screen were the browser's.
+  assert.deepEqual(brain.CONFIG_DEFAULTS.paletteProcesses, []);
+});
+
 test("parse_args reads flags and zeroes a bad parent pid", function () {
   const a = brain.parse_args(["node", "brain.js", "--once",
     "--parent-pid", "123", "--dir", "D:\\x", "--state", "D:\\s.json"]);

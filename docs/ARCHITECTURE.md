@@ -36,7 +36,9 @@ Two resident processes, one shared data file:
       on that hwnd -> newest session's repoId/branch, unless
       `frameOwner[hwnd] == "rainbow"` (Lane A already marks those) -> no ring.
    c. Process name in `config.json` paletteProcesses -> process name as
-      repoId (deterministic palette color).
+      repoId (deterministic palette color). The shipped default is EMPTY:
+      a default of ["chrome","slack"] made a fresh install ring the browser
+      and nothing else, which reads as the tool coloring the wrong windows.
    d. Otherwise -> no ring.
 3. `colorsFor({repoId, branch})` -> frameHex. Ring set = [{hwnd, pid, hex}].
 4. rings.json changed -> renderer reconciles: destroy rings whose hwnd left
@@ -45,7 +47,10 @@ Two resident processes, one shared data file:
    recolor changed ones in place.
 5. Renderer tick per ring: target gone or pid mismatch -> destroy ring;
    minimized -> hide; rect changed -> SetWindowPos + refresh the region
-   ring.
+   ring; then pin the ring immediately above its target in z-order
+   (`KeepAboveTarget`), so covering the target covers the ring. Rings are
+   NOT topmost - the steady-state cost is one GetWindow(GW_HWNDPREV) read
+   per ring per tick, and SetWindowPos only fires when the pin slipped.
 
 ## Tagging
 

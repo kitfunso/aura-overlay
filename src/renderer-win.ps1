@@ -90,6 +90,7 @@ public static class RingHost {
     [DllImport("user32.dll")] private static extern bool EndDeferWindowPos(IntPtr ctx);
     [DllImport("user32.dll")] private static extern bool IsWindow(IntPtr h);
     [DllImport("user32.dll")] private static extern bool IsIconic(IntPtr h);
+    [DllImport("user32.dll")] private static extern IntPtr GetWindow(IntPtr h, uint cmd);
     [DllImport("user32.dll")] private static extern int SetWindowRgn(IntPtr h, IntPtr rgn, bool redraw);
     [DllImport("user32.dll")] private static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
     [DllImport("user32.dll")] private static extern bool InvalidateRect(IntPtr h, IntPtr rect, bool erase);
@@ -240,7 +241,11 @@ public static class RingHost {
         IntPtr target = (IntPtr)key;
         // hwnds recycle: never ring a window the entry's pid does not own.
         if (!IsWindow(target) || !PidOwnsWindow(target, pid)) return;
-        uint ex = 0x80000u | 0x20u | 0x80u | 0x8u | 0x8000000u;  // LAYERED|TRANSPARENT|TOOLWINDOW|TOPMOST|NOACTIVATE
+        // NOT topmost: a ring belongs to its own window's z-order, not to the
+        // top of the screen. With WS_EX_TOPMOST the ring painted over whatever
+        // covered its target, so a browser in front of a ringed terminal wore
+        // the terminal's color. KeepAboveTarget below does the pinning.
+        uint ex = 0x80000u | 0x20u | 0x80u | 0x8000000u;  // LAYERED|TRANSPARENT|TOOLWINDOW|NOACTIVATE
         IntPtr hwnd = CreateWindowExW(ex, className, "", 0x80000000u /* WS_POPUP */,
             0, 0, 10, 10, IntPtr.Zero, IntPtr.Zero, hInstance, IntPtr.Zero);
         if (hwnd == IntPtr.Zero) return;
@@ -302,6 +307,19 @@ public static class RingHost {
             }
         }
         if (!ring.Shown) { ShowWindow(ring.Hwnd, 8); ring.Shown = true; }  // SW_SHOWNA
+        KeepAboveTarget(ring);
+    }
+
+    // Pin the ring immediately above its target in z-order. Anything covering
+    // the target then covers the ring too, and a ring can never paint over an
+    // unrelated window. SetWindowPos inserts into the target's own band, so a
+    // genuinely topmost target keeps a topmost ring. The GetWindow check makes
+    // the steady state one cheap read per ring per tick: GW_HWNDPREV (3) is the
+    // window directly ABOVE the target, which is the ring when already pinned.
+    private static void KeepAboveTarget(Ring ring) {
+        if (GetWindow(ring.Target, 3) == ring.Hwnd) return;
+        uint flags = 0x1u | 0x2u | 0x10u;  // SWP_NOSIZE | SWP_NOMOVE | SWP_NOACTIVATE
+        SetWindowPos(ring.Hwnd, ring.Target, 0, 0, 0, 0, flags);
     }
 
     private static void Reconcile(string text) {

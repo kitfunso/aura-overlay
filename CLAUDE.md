@@ -15,11 +15,14 @@ windows). Docs: `docs/ARCHITECTURE.md`; spike evidence: `aura/docs/LANE-B.md`.
    ever writes it. Why: it is Lane A's own state file; a second writer
    corrupts the hook's caching.
 3. **Overlay windows are raw Win32, created with their final ex-styles
-   (LAYERED | TRANSPARENT | NOACTIVATE | TOOLWINDOW | TOPMOST) at
-   `CreateWindowEx` time.** WinForms is allowed ONLY for the tray NotifyIcon,
-   never for a window that shows on screen. Why: a WinForms Form activates
-   itself on first show even with the styles retrofitted (measured
-   2026-08-30); that steals the user's focus.
+   (LAYERED | TRANSPARENT | NOACTIVATE | TOOLWINDOW) at `CreateWindowEx`
+   time.** WinForms is allowed ONLY for the tray NotifyIcon, never for a
+   window that shows on screen. Why: a WinForms Form activates itself on
+   first show even with the styles retrofitted (measured 2026-08-30); that
+   steals the user's focus. NOT topmost: a ring is pinned immediately above
+   its own target in z-order every tick (`KeepAboveTarget`). Why: with
+   WS_EX_TOPMOST a ring painted over whatever covered its target, so a
+   browser in front of a ringed terminal wore the terminal's color.
 4. **Never modify other apps' windows.** Win32 calls on windows we did not
    create are read-only (enumerate, rect, class, pid). We only ever set
    state on ring windows we own. Why: mutating foreign windows is how an

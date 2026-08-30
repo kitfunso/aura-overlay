@@ -25,7 +25,11 @@ const TERMINAL_PROCESSES = new Set([
 ]);
 const CYCLE_MS = 2000;
 const SCAN_TIMEOUT_MS = 5000;
-const CONFIG_DEFAULTS = { paletteProcesses: ["chrome", "slack"] };
+// Empty by default: aura rings Claude Code sessions, so out of the box only
+// terminals carrying an aura session and manually tagged windows get a ring.
+// A default of ["chrome","slack"] shipped a tool that ringed the browser and
+// nothing else on a machine whose terminals were all rainbow-owned.
+const CONFIG_DEFAULTS = { paletteProcesses: [] };
 
 function parse_args(argv) {
   const args = { once: false, parentPid: 0, dir: "", state: "" };
@@ -325,6 +329,7 @@ function main() {
 }
 
 module.exports = {
+  CONFIG_DEFAULTS: CONFIG_DEFAULTS,
   parse_args: parse_args,
   newest_session: newest_session,
   newest_session_at_or_before: newest_session_at_or_before,

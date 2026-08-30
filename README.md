@@ -36,17 +36,23 @@ In priority order, per window:
    (reads aura's `state.json`, read-only). Rainbow-owned terminals
    (aura's "no project" marker) are skipped.
 3. A process named in `paletteProcesses` (stable per-process palette color).
+   Empty by default, so nothing outside your Claude Code terminals and your
+   own tags is ever ringed.
+
+A ring sits directly above its own window in z-order, never on top of the
+screen. Cover a ringed window and its ring goes with it.
 
 ## Config
 
-`%LOCALAPPDATA%\aura-overlay\config.json`:
+`%LOCALAPPDATA%\aura-overlay\config.json`, created on first run:
 
 ```json
-{"paletteProcesses":["chrome","slack"]}
+{"paletteProcesses":[]}
 ```
 
-Process names without `.exe`. Edit while running; the brain picks it up on
-its next cycle. All runtime state lives in the same directory
+Add process names without `.exe` to color other apps, for example
+`{"paletteProcesses":["chrome","slack"]}`. Edit while running; the brain
+picks it up on its next cycle. All runtime state lives in the same directory
 (`rings.json`, `tags.json`, `tag-identities.json`, `renderer.log`).
 
 ## Autostart (opt-in, not installed by default)
