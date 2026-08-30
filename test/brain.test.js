@@ -12,8 +12,8 @@ function iso(ms) { return new Date(ms).toISOString(); }
 const CONFIG = { paletteProcesses: ["chrome", "slack"] };
 
 test("the shipped palette default is empty", function () {
-  // A non-empty default rings apps the user never asked for: with terminals
-  // rainbow-owned or unseen, the only rings on screen were the browser's.
+  // A non-empty default rings apps the user never asked for: with no terminal
+  // session seen yet, the only rings on screen were the browser's.
   assert.deepEqual(brain.CONFIG_DEFAULTS.paletteProcesses, []);
 });
 
@@ -125,12 +125,23 @@ test("a tagged window with an unresolved identity gets no ring at all", function
   assert.equal(report.length, 0);
 });
 
-test("rainbow-owned terminal windows are skipped", function () {
+test("no repo, no ring: an off-repo terminal session is skipped", function () {
   const state = {
-    sessions: { s: { repoId: "r", branch: null, updatedAt: iso(T0), hwnd: 7 } },
-    frameOwner: { "7": "rainbow" },
+    sessions: { s: { repoId: "C:/Users/x/notes", branch: null, isRepo: false, updatedAt: iso(T0), hwnd: 7 } },
   };
   const report = brain.build_rings(
     [{ hwnd: 7, pid: 70, process: "WindowsTerminal" }], state, [], {}, CONFIG);
   assert.equal(report.length, 0);
+});
+
+test("a repo tab outranks a newer bare shell in the same window", function () {
+  const state = {
+    sessions: {
+      repo: { repoId: "r", branch: "main", isRepo: true, updatedAt: iso(T0), hwnd: 7 },
+      shell: { repoId: "C:/Users/x", branch: null, isRepo: false, updatedAt: iso(T0 + 1000), hwnd: 7 },
+    },
+  };
+  const report = brain.build_rings(
+    [{ hwnd: 7, pid: 70, process: "WindowsTerminal" }], state, [], {}, CONFIG);
+  assert.deepEqual(report.map(function (r) { return [r.hwnd, r.repoId]; }), [[7, "r"]]);
 });

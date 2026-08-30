@@ -1,18 +1,5 @@
-# aura-overlay renderer: multi-ring host (MVP Step 2).
-# Raw Win32 only (CLAUDE.md rule 3): every ring window is created with
-# WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW |
-# WS_EX_TOPMOST at CreateWindowEx time. A message-only host window owns a
-# WM_TIMER tick that (a) reloads rings.json when its mtime changes and
-# reconciles create/destroy/recolor, (b) tracks every ring's target rect
-# (DWMWA_EXTENDED_FRAME_BOUNDS), hides on minimize, destroys on target
-# death or pid mismatch (hwnds recycle; rings.json entries carry the pid
-# that owned the hwnd when the brain saw it).
-# rings.json shape: [{"hwnd": 123, "pid": 456, "hex": "26bbd9"}, ...]
-# Step 4: resident app. The renderer is the process of record: it holds the
-# singleton mutex, owns the tray icon (raw Win32 Shell_NotifyIcon in the same
-# message loop; WinForms event handlers cannot fire while PowerShell is
-# blocked inside Run), spawns the brain as a child with --parent-pid, and
-# quits when stop.flag appears next to rings.json.
+# aura-overlay renderer: raw Win32 multi-ring host (CLAUDE.md rule 3) plus
+# tray icon, hotkeys, and brain lifecycle. Full design: docs/ARCHITECTURE.md.
 param(
     [string]$RingsFile = "$env:LOCALAPPDATA\aura-overlay\rings.json",
     [int]$PollMs = 30,
@@ -180,10 +167,8 @@ public static class RingHost {
             if (id == HOTKEY_ID_UNTAG) UntagForeground();
             return IntPtr.Zero;
         }
-        // An Explorer restart kills every tray icon with it; re-add ours or
-        // the Quit menu is gone until the next full restart. The zero guard
-        // matters: an unregistered message id of 0 would match WM_NULL, which
-        // ShowTrayMenu posts to this window after every menu.
+        // Explorer restart kills every tray icon; re-add it here. The zero
+        // guard avoids a false match against WM_NULL (unregistered id 0).
         if (taskbarCreatedMsg != 0 && msg == taskbarCreatedMsg && hWnd == host) {
             trayShown = Shell_NotifyIconW(0, ref trayData);   // NIM_ADD
             Log(trayShown ? "tray icon re-added after Explorer restart" : "tray icon re-add FAILED");
@@ -197,11 +182,8 @@ public static class RingHost {
         try { File.AppendAllText(logPath, DateTime.Now.ToString("s") + " " + line + Environment.NewLine); } catch { }
     }
 
-    // The one deliberate SetForegroundWindow in this codebase: on our OWN
-    // hidden host window, only in response to the user clicking OUR tray
-    // icon (focus already moved to the taskbar with that click). Without it
-    // the popup menu never dismisses (MS KB135788). No foreign window is
-    // ever touched (rule 4).
+    // The only SetForegroundWindow in this codebase, on our own hidden host
+    // window: without it the tray popup menu never dismisses (MS KB135788).
     private static void ShowTrayMenu() {
         IntPtr menu = CreatePopupMenu();
         if (menu == IntPtr.Zero) return;
@@ -241,10 +223,8 @@ public static class RingHost {
         IntPtr target = (IntPtr)key;
         // hwnds recycle: never ring a window the entry's pid does not own.
         if (!IsWindow(target) || !PidOwnsWindow(target, pid)) return;
-        // NOT topmost: a ring belongs to its own window's z-order, not to the
-        // top of the screen. With WS_EX_TOPMOST the ring painted over whatever
-        // covered its target, so a browser in front of a ringed terminal wore
-        // the terminal's color. KeepAboveTarget below does the pinning.
+        // NOT topmost (CLAUDE.md rule 3): a ring belongs to its target's own
+        // z-order. KeepAboveTarget below does the pinning.
         uint ex = 0x80000u | 0x20u | 0x80u | 0x8000000u;  // LAYERED|TRANSPARENT|TOOLWINDOW|NOACTIVATE
         IntPtr hwnd = CreateWindowExW(ex, className, "", 0x80000000u /* WS_POPUP */,
             0, 0, 10, 10, IntPtr.Zero, IntPtr.Zero, hInstance, IntPtr.Zero);
@@ -276,11 +256,8 @@ public static class RingHost {
         if (DwmGetWindowAttribute(ring.Target, 9, out r, Marshal.SizeOf(typeof(RECT))) != 0) return;
         if (!ring.HaveLast || r.Left != ring.Last.Left || r.Top != ring.Last.Top || r.Right != ring.Last.Right || r.Bottom != ring.Last.Bottom) {
             int t = thickness;
-            // The region is in window-relative coordinates: a pure MOVE keeps
-            // the ring's shape, so only a SIZE change rebuilds it. Rebuilding
-            // on every move burned 10% of a core with 7 windows dragging
-            // (SetWindowRgn forces a full repaint each time); with SWP_NOSIZE
-            // a move is one cheap SetWindowPos.
+            // Only a SIZE change rebuilds the region; a pure MOVE keeps shape.
+            // Rebuilding every move measured too costly (docs/ARCHITECTURE.md).
             bool sizeChanged = !ring.HaveLast
                 || (r.Right - r.Left) != (ring.Last.Right - ring.Last.Left)
                 || (r.Bottom - r.Top) != (ring.Last.Bottom - ring.Last.Top);
@@ -310,12 +287,8 @@ public static class RingHost {
         KeepAboveTarget(ring);
     }
 
-    // Pin the ring immediately above its target in z-order. Anything covering
-    // the target then covers the ring too, and a ring can never paint over an
-    // unrelated window. SetWindowPos inserts into the target's own band, so a
-    // genuinely topmost target keeps a topmost ring. The GetWindow check makes
-    // the steady state one cheap read per ring per tick: GW_HWNDPREV (3) is the
-    // window directly ABOVE the target, which is the ring when already pinned.
+    // Pin the ring immediately above its target in z-order every tick
+    // (docs/ARCHITECTURE.md); GW_HWNDPREV (3) makes the steady state cheap.
     private static void KeepAboveTarget(Ring ring) {
         if (GetWindow(ring.Target, 3) == ring.Hwnd) return;
         uint flags = 0x1u | 0x2u | 0x10u;  // SWP_NOSIZE | SWP_NOMOVE | SWP_NOACTIVATE
@@ -335,9 +308,8 @@ public static class RingHost {
                 want.Target = (IntPtr)Convert.ToInt64(d["hwnd"]);
                 want.Pid = Convert.ToUInt32(d["pid"]);
                 want.Hex = Convert.ToString(d["hex"]);
-                // bad hex must throw HERE, inside this per-entry catch: in
-                // CreateRing it fires after CreateWindowEx (leaked hwnd) and
-                // aborts Reconcile before lastMtime moves (re-thrown per tick)
+                // Bad hex must throw HERE: in CreateRing it would leak an
+                // hwnd and re-abort Reconcile every tick (lastMtime stuck).
                 ColorRefFromHex(want.Hex);
                 desired[(long)want.Target] = want;   // duplicate hwnds: last wins
             } catch { }                              // one bad entry never kills the set
@@ -412,9 +384,8 @@ public static class RingHost {
             else File.Move(tmp, tagsPath);
             tagsDirty = false;
         } catch { }
-        // still dirty: the brain likely held the file open for its read.
-        // Tick calls FlushTags again 30 ms later; a tag is never lost to
-        // one sharing violation.
+        // Still dirty: a sharing violation from the brain's read. Tick
+        // retries FlushTags 30 ms later, so a tag is never lost to it.
     }
 
     private static bool IsOurWindow(IntPtr h) {
@@ -505,9 +476,8 @@ public static class RingHost {
         wc.lpszClassName = className;
         if (RegisterClassExW(ref wc) == 0) return 2;
 
-        // hidden top-level host window: owns the timer and the tray callback,
-        // never shown. (Was message-only; the tray menu needs a host that
-        // SetForegroundWindow accepts, and message-only windows are not it.)
+        // Hidden top-level host (not message-only): SetForegroundWindow for
+        // the tray menu requires a real window, which message-only is not.
         host = CreateWindowExW(0x80 /* TOOLWINDOW */, className, "aura-overlay-host", 0x80000000u /* WS_POPUP */, 0, 0, 0, 0, IntPtr.Zero, IntPtr.Zero, hInstance, IntPtr.Zero);
         if (host == IntPtr.Zero) return 3;
         SetTimer(host, (IntPtr)1, (uint)pollMs, IntPtr.Zero);
@@ -553,9 +523,8 @@ public static class RingHost {
 }
 '@
 
-# Brain child: same lifetime as the renderer. The kill below is the clean
-# path; --parent-pid is the backstop so a crashed renderer never leaves a
-# brain running.
+# Brain child shares the renderer's lifetime: killed on clean exit; the
+# brain's own --parent-pid watchdog is the backstop if the renderer crashes.
 $brainProc = $null
 if (-not $NoBrain) {
     $brainScript = Join-Path $PSScriptRoot 'brain.js'

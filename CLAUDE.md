@@ -42,6 +42,10 @@ windows). Docs: `docs/ARCHITECTURE.md`; spike evidence: `aura/docs/LANE-B.md`.
 ## Coding Conventions
 - Plain Node.js + PowerShell 5.1 (no `&&`, no ternary in ps1).
 - Small files, verb_noun function names, no abbreviations.
+- Comments: one line, two at most. Say why, never what. Measurement notes and
+  incident history belong in `docs/ARCHITECTURE.md`, not in the code. A
+  file-header block may run to 3 lines. Any longer block has failed this rule;
+  run `node scripts/check-comments.js` with the tests.
 - No em dashes in UI strings or commit messages.
 - Shared JSON files: exactly ONE writer per file (two read-modify-write
   writers can silently lose an update), atomic writes (temp + rename);
@@ -63,9 +67,9 @@ windows). Docs: `docs/ARCHITECTURE.md`; spike evidence: `aura/docs/LANE-B.md`.
 - Spawning a long-lived child that must outlive a dying process tree with
   plain `spawn`: on Windows it dies with the tree (measured in aura).
   Launchers use the `Start-Process -WindowStyle Hidden` double-hop.
-- Ringing rainbow-owned terminal windows: Lane A's hue-cycle already marks
-  them "no project"; a static ring on top contradicts it. The brain skips
-  windows whose `frameOwner` entry is "rainbow".
+- Ringing a terminal window with no project: no repo means no color anywhere,
+  so the brain skips sessions carrying `isRepo: false`. A colored window must
+  always mean a repo, in both lanes.
 - Trusting a hwnd across time: handles recycle. Tags and ring entries carry
   hwnd + pid; the renderer verifies the pid still owns the hwnd before
   ringing, and everything is pruned the moment the window or process is

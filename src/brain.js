@@ -1,19 +1,7 @@
 "use strict";
-// aura-overlay brain: every 2 s, map visible windows to ring colors and
-// write rings.json for the renderer. Identity ladder, first match wins:
-//   a. tags.json entry (hwnd + pid) whose frozen identity exists in
-//      tag-identities.json -> that repoId/branch. Unresolved: no ring yet.
-//   b. terminal process with aura sessions on that hwnd -> newest session,
-//      unless aura's frameOwner marks the hwnd "rainbow" -> no ring.
-//   c. process name in config paletteProcesses -> process name as repoId.
-//   d. nothing.
-// One writer per shared file: this process writes rings.json and
-// tag-identities.json, NEVER tags.json (renderer-owned) and NEVER aura's
-// state.json (CLAUDE.md rule 2, read-only). config.json is seeded with
-// defaults on first run, then user-edited.
-// Modes: default loops (with --parent-pid watchdog); --once runs a single
-// cycle, prints the ring report, exits. --dir and --state override paths
-// for tests.
+// aura-overlay brain: maps visible windows to ring colors, writes
+// rings.json for the renderer. Identity ladder and file-ownership
+// contract: docs/ARCHITECTURE.md.
 const { execFileSync, spawn } = require("child_process");
 const fs = require("fs");
 const path = require("path");
@@ -25,10 +13,8 @@ const TERMINAL_PROCESSES = new Set([
 ]);
 const CYCLE_MS = 2000;
 const SCAN_TIMEOUT_MS = 5000;
-// Empty by default: aura rings Claude Code sessions, so out of the box only
-// terminals carrying an aura session and manually tagged windows get a ring.
-// A default of ["chrome","slack"] shipped a tool that ringed the browser and
-// nothing else on a machine whose terminals were all rainbow-owned.
+// Empty by default: a nonempty default rings the wrong windows on a fresh
+// install (docs/ARCHITECTURE.md).
 const CONFIG_DEFAULTS = { paletteProcesses: [] };
 
 function parse_args(argv) {
@@ -61,11 +47,13 @@ function parent_alive(pid) {
   catch (err) { return err.code === "EPERM"; }
 }
 
+// Skips off-repo sessions, so a window shared by a repo tab and a bare shell
+// keeps the repo's ring (same precedence Lane A gives the window frame).
 function newest_session_for_hwnd(state, hwnd) {
   let best = null;
   for (const id of Object.keys(state.sessions || {})) {
     const s = state.sessions[id];
-    if (s.hwnd !== hwnd) continue;
+    if (s.hwnd !== hwnd || s.isRepo === false) continue;
     if (!best || String(s.updatedAt) > String(best.updatedAt)) best = s;
   }
   return best;
@@ -80,9 +68,8 @@ function newest_session(state) {
   return best;
 }
 
-// Newest session already updated at tag time (updatedAt at or before t,
-// unix ms). Freezing against this stops a session whose agent turns AFTER
-// the hotkey from stealing the tag while resolution is pending.
+// Newest session at or before tag time (unix ms): stops a session whose
+// agent turns AFTER the hotkey from stealing the tag mid-resolution.
 function newest_session_at_or_before(state, t) {
   if (!isFinite(t)) return null;
   let best = null;
@@ -98,11 +85,8 @@ function tag_key(tag) {
   return String(tag.hwnd) + ":" + String(tag.pid) + ":" + String(tag.taggedAt);
 }
 
-// Freeze new tags to the newest aura session AT TAG TIME (updatedAt at or
-// before taggedAt). If no session predates the tag, fall back to newest
-// overall so an early tag still resolves once a session appears. Prune
-// identities whose tag is gone; a tag with no session at all stays
-// unresolved and is retried next cycle.
+// Freeze new tags to the newest session at tag time; fall back to newest
+// overall so an early tag still resolves later (docs/ARCHITECTURE.md).
 function resolve_tag_identities(tags, state, identities) {
   const next = {};
   let changed = false;
@@ -123,7 +107,6 @@ function resolve_tag_identities(tags, state, identities) {
 
 function build_rings(windows, state, tags, identities, config) {
   const palette = new Set((config.paletteProcesses || []).map(function (s) { return String(s).toLowerCase(); }));
-  const frameOwner = (state && state.frameOwner) || {};
   const report = [];
   for (const win of windows) {
     let identity = null;
@@ -136,7 +119,6 @@ function build_rings(windows, state, tags, identities, config) {
       identity = frozen;
       source = "tag";
     } else if (TERMINAL_PROCESSES.has(win.process)) {
-      if (frameOwner[String(win.hwnd)] === "rainbow") continue;  // Lane A already marks it "no project"
       const session = newest_session_for_hwnd(state, win.hwnd);
       if (session) {
         identity = { repoId: session.repoId, branch: session.branch || null };
@@ -231,10 +213,8 @@ function scan_once() {
   }
 }
 
-// Persistent scanner child (detect-win.ps1 -Loop). One powershell for the
-// brain's whole life; a fresh spawn per cycle would burn ~10% of a core on
-// startup alone (rule 7). The scanner exits on its own when our stdin pipe
-// closes, so a dead brain never leaves a scanner behind.
+// Persistent scanner child, reused every cycle: a fresh spawn per cycle
+// is too costly (docs/ARCHITECTURE.md). Exits on its own when our stdin closes.
 function create_scanner() {
   const script = path.join(__dirname, "detect-win.ps1");
   const child = spawn("powershell.exe",

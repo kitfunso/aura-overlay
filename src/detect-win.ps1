@@ -1,10 +1,6 @@
-# aura-overlay window scanner. Visible, titled, non-tool, non-cloaked
-# top-level windows only. Emits one compressed JSON line per scan:
-# [{ hwnd, pid, process }] - titles are used ONLY as a liveness filter and
-# never emitted (CLAUDE.md rule 8: titles can hold prompt text).
-# Default: one scan, exit. -Loop: read commands from stdin ("scan" emits a
-# scan line, "exit" or EOF quits) so the brain spawns ONE powershell for
-# its whole life instead of one per 2 s cycle (rule 7: CPU budget).
+# aura-overlay window scanner: visible, titled, non-cloaked top-level windows
+# only; emits [{hwnd, pid, process}] per scan (titles never emitted, rule 8).
+# -Loop reuses one process per brain lifetime instead of per cycle (rule 7).
 param([switch]$Loop)
 $ErrorActionPreference = 'Stop'
 

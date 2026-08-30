@@ -1,9 +1,8 @@
 "use strict";
 
-// THE COLOR CONTRACT. Lane B inherits this file unchanged.
-// Pure: no I/O, no OS calls, node builtins only.
-// Read docs/ARCHITECTURE.md "The Color Contract" before editing;
-// mapping changes are breaking changes (CLAUDE.md rule 7).
+// THE COLOR CONTRACT. Lane B inherits this file unchanged. Pure: no I/O.
+// Mapping changes are breaking changes (CLAUDE.md rule 7); read
+// docs/ARCHITECTURE.md "The Color Contract" first.
 
 const SHADE_COUNT = 4;
 const BASE_BRANCHES = new Set(["main", "master"]);

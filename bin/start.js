@@ -1,11 +1,7 @@
 "use strict";
-// aura-overlay launcher.
-//   node bin/start.js         start the resident app (renderer + brain), print the pid
-//   node bin/start.js --stop  write stop.flag; the renderer quits within a tick
-// The renderer launches through the Start-Process double-hop: children of a
-// dying process tree die with it on Windows (measured in aura), so the
-// renderer must be created by a process outside this one's tree. The
-// renderer then spawns the brain itself.
+// aura-overlay launcher: `start.js` runs the app; `start.js --stop` signals
+// it to quit. Double-hop launch: a child dies with its tree on Windows
+// (docs/ARCHITECTURE.md), so the renderer must be spawned outside ours.
 const { execFileSync } = require("child_process");
 const fs = require("fs");
 const path = require("path");

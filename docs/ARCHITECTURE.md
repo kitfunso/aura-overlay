@@ -10,7 +10,9 @@ Two resident processes, one shared data file:
   it through `src/color.js`, and writes the desired ring set to
   `rings.json` (atomic write, only when changed). Exits on its own when
   the renderer pid it was launched with is gone (no orphan on a renderer
-  crash).
+  crash). The scanner runs as one persistent PowerShell child for the
+  brain's whole life; a fresh spawn per cycle would cost about 10% of a
+  core on startup alone.
 - **renderer** (`src/renderer-win.ps1`, PowerShell 5.1): owns one raw Win32
   window class and N ring windows. A 30 ms WM_TIMER tick tracks every ring's
   target rect (`DWMWA_EXTENDED_FRAME_BOUNDS`) and reloads `rings.json` when
@@ -33,8 +35,10 @@ Two resident processes, one shared data file:
       exists in `tag-identities.json` -> that repoId/branch. Unresolved
       tags get no ring yet.
    b. Terminal process (aura's allowlist) with sessions in aura state.json
-      on that hwnd -> newest session's repoId/branch, unless
-      `frameOwner[hwnd] == "rainbow"` (Lane A already marks those) -> no ring.
+      on that hwnd -> newest session's repoId/branch. Sessions with
+      `isRepo: false` are skipped, so a window whose only sessions are bare
+      shells gets no ring (no repo, no color - Lane A does the same with the
+      window frame), and a repo tab outranks a newer shell tab beside it.
    c. Process name in `config.json` paletteProcesses -> process name as
       repoId (deterministic palette color). The shipped default is EMPTY:
       a default of ["chrome","slack"] made a fresh install ring the browser
@@ -90,8 +94,8 @@ state.
 ## The contract pin
 
 `src/color.js` is a byte-identical copy of aura's. The consumed
-`state.json` interface is pinned to: `sessions[id].{hwnd, repoId, branch,
-updatedAt}` and `frameOwner[hwndKey]`. If aura changes either, this repo
+`state.json` interface is pinned to `sessions[id].{hwnd, repoId, branch,
+isRepo, updatedAt}`. If aura changes it, this repo
 updates the same day; the hash check in CI-less reality is the Step 1
 verify command in the MVP plan.
 
@@ -104,5 +108,9 @@ verify command in the MVP plan.
 - Region ring (outer rect minus inner rect) makes the center a non-window;
   WS_EX_TRANSPARENT makes the ring itself hit-test invisible.
 - Spike cost: one ring at 30 ms poll = 0.72% CPU under continuous motion.
+- Rebuilding a ring's clip region on every move (not just a resize) cost
+  10% of a core with 7 windows dragging; SetWindowRgn forces a full
+  repaint per call, so a pure move uses SetWindowPos with SWP_NOSIZE and
+  skips the rebuild.
 - Windows Terminal runs every window in one process; hwnd, never pid, is
   the window key.
