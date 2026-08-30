@@ -40,6 +40,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Runtime.InteropServices;
+using System.Text;
 using System.Web.Script.Serialization;
 
 namespace AuraOverlay {
@@ -105,12 +106,19 @@ public static class RingHost {
     [DllImport("user32.dll")] private static extern bool GetCursorPos(out POINT pt);
     [DllImport("user32.dll")] private static extern bool SetForegroundWindow(IntPtr h);
     [DllImport("user32.dll")] private static extern bool PostMessageW(IntPtr h, uint msg, IntPtr w, IntPtr l);
+    [DllImport("user32.dll")] private static extern IntPtr GetForegroundWindow();
+    [DllImport("user32.dll")] private static extern bool RegisterHotKey(IntPtr h, int id, uint mods, uint vk);
+    [DllImport("user32.dll")] private static extern bool UnregisterHotKey(IntPtr h, int id);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)] private static extern int GetClassNameW(IntPtr h, StringBuilder sb, int max);
 
     private const uint WM_TIMER = 0x0113;
     private const uint WM_DESTROY = 0x0002;
     private const uint WM_ERASEBKGND = 0x0014;
     private const uint WM_TRAY = 0x8001;         // WM_APP + 1: tray callback
+    private const uint WM_HOTKEY = 0x0312;
     private const uint MENU_ID_QUIT = 1;
+    private const int HOTKEY_ID_TAG = 1;         // Ctrl+Alt+G
+    private const int HOTKEY_ID_UNTAG = 2;       // Ctrl+Alt+U
 
     private class Ring {
         public IntPtr Hwnd;       // the ring window we own
@@ -138,6 +146,10 @@ public static class RingHost {
     private static NOTIFYICONDATA trayData;
     private static bool trayShown;
 
+    private class Tag { public long Hwnd; public uint Pid; public long TaggedAt; }
+    private static string tagsPath;
+    private static List<Tag> tags = new List<Tag>();
+
     private static IntPtr Proc(IntPtr hWnd, uint msg, IntPtr wParam, IntPtr lParam) {
         if (msg == WM_TIMER && hWnd == host) { Tick(); return IntPtr.Zero; }
         if (msg == WM_ERASEBKGND) {
@@ -152,6 +164,12 @@ public static class RingHost {
         if (msg == WM_TRAY && hWnd == host) {
             long evt = lParam.ToInt64() & 0xFFFF;
             if (evt == 0x0205 || evt == 0x007B) ShowTrayMenu();   // WM_RBUTTONUP or WM_CONTEXTMENU
+            return IntPtr.Zero;
+        }
+        if (msg == WM_HOTKEY && hWnd == host) {
+            long id = wParam.ToInt64();
+            if (id == HOTKEY_ID_TAG) TagForeground();
+            if (id == HOTKEY_ID_UNTAG) UntagForeground();
             return IntPtr.Zero;
         }
         if (msg == WM_DESTROY && hWnd == host) { PostQuitMessage(0); return IntPtr.Zero; }
@@ -291,6 +309,85 @@ public static class RingHost {
         } catch { }                   // fail silent (rule 6); state unchanged
     }
 
+    // Tagging (renderer-owned side): this process is the ONLY writer of
+    // tags.json. The brain freezes each tag's identity into its own file.
+    private static void LoadTags() {
+        tags = new List<Tag>();
+        try {
+            if (!File.Exists(tagsPath)) return;
+            object parsed = json.DeserializeObject(File.ReadAllText(tagsPath));
+            object[] list = parsed as object[];
+            if (list == null) return;
+            foreach (object o in list) {
+                Dictionary<string, object> d = o as Dictionary<string, object>;
+                if (d == null || !d.ContainsKey("hwnd") || !d.ContainsKey("pid") || !d.ContainsKey("taggedAt")) continue;
+                try {
+                    Tag t = new Tag();
+                    t.Hwnd = Convert.ToInt64(d["hwnd"]);
+                    t.Pid = Convert.ToUInt32(d["pid"]);
+                    t.TaggedAt = Convert.ToInt64(d["taggedAt"]);
+                    tags.Add(t);
+                } catch { }
+            }
+        } catch { }
+    }
+
+    private static void SaveTags() {
+        try {
+            List<object> list = new List<object>();
+            foreach (Tag t in tags) {
+                Dictionary<string, object> d = new Dictionary<string, object>();
+                d["hwnd"] = t.Hwnd; d["pid"] = t.Pid; d["taggedAt"] = t.TaggedAt;
+                list.Add(d);
+            }
+            string tmp = tagsPath + ".tmp";
+            File.WriteAllText(tmp, json.Serialize(list));
+            // File.Replace is atomic: the brain must never see a missing
+            // file mid-write (it would wrongly prune every frozen identity).
+            if (File.Exists(tagsPath)) File.Replace(tmp, tagsPath, null);
+            else File.Move(tmp, tagsPath);
+        } catch { }
+    }
+
+    private static bool IsOurWindow(IntPtr h) {
+        StringBuilder sb = new StringBuilder(64);
+        GetClassNameW(h, sb, 64);
+        return sb.ToString() == className;
+    }
+
+    private static long NowUnixMs() {
+        return (long)(DateTime.UtcNow - new DateTime(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc)).TotalMilliseconds;
+    }
+
+    private static void TagForeground() {
+        IntPtr fg = GetForegroundWindow();
+        if (fg == IntPtr.Zero || fg == host || IsOurWindow(fg)) return;
+        uint pid;
+        GetWindowThreadProcessId(fg, out pid);
+        if (pid == 0) return;
+        foreach (Tag t in tags) { if (t.Hwnd == (long)fg && t.Pid == pid) return; }   // already tagged
+        Tag tag = new Tag();
+        tag.Hwnd = (long)fg; tag.Pid = pid; tag.TaggedAt = NowUnixMs();
+        tags.Add(tag);
+        SaveTags();
+        Log("tagged hwnd " + tag.Hwnd + " pid " + tag.Pid);
+    }
+
+    private static void UntagForeground() {
+        IntPtr fg = GetForegroundWindow();
+        if (fg == IntPtr.Zero) return;
+        int removed = tags.RemoveAll(delegate(Tag t) { return t.Hwnd == (long)fg; });
+        if (removed > 0) { SaveTags(); Log("untagged hwnd " + (long)fg); }
+    }
+
+    private static void PruneTags() {
+        int removed = tags.RemoveAll(delegate(Tag t) {
+            IntPtr h = (IntPtr)t.Hwnd;
+            return !IsWindow(h) || !PidOwnsWindow(h, t.Pid);
+        });
+        if (removed > 0) { SaveTags(); Log("pruned " + removed + " dead tag(s)"); }
+    }
+
     private static void Tick() {
         if (File.Exists(stopFlagPath)) {          // launcher --stop: same polled-file pattern as rings.json
             try { File.Delete(stopFlagPath); } catch { }
@@ -298,6 +395,7 @@ public static class RingHost {
         }
         if (DateTime.UtcNow > deadline) { Quit(); return; }
         CheckRingsFile();
+        PruneTags();
         List<long> keys = new List<long>(rings.Keys);
         foreach (long key in keys) {
             Ring ring;
@@ -349,6 +447,16 @@ public static class RingHost {
         trayShown = Shell_NotifyIconW(0, ref trayData);           // NIM_ADD; failure is cosmetic (rule 6)
         Log(trayShown ? "tray icon added" : "tray icon add FAILED");
 
+        tagsPath = Path.Combine(runtimeDir, "tags.json");
+        LoadTags();
+        PruneTags();   // windows that died while we were not running
+        // MOD_NOREPEAT | MOD_CONTROL | MOD_ALT. A taken hotkey is logged and
+        // ignored (rule 6): rings and the other key still work.
+        if (!RegisterHotKey(host, HOTKEY_ID_TAG, 0x4000 | 0x2 | 0x1, 0x47))
+            Log("hotkey Ctrl+Alt+G registration FAILED (already taken elsewhere)");
+        if (!RegisterHotKey(host, HOTKEY_ID_UNTAG, 0x4000 | 0x2 | 0x1, 0x55))
+            Log("hotkey Ctrl+Alt+U registration FAILED (already taken elsewhere)");
+
         MSG msg;
         while (GetMessageW(out msg, IntPtr.Zero, 0, 0) > 0) {
             TranslateMessage(ref msg);
@@ -358,6 +466,8 @@ public static class RingHost {
         // thread), but leave nothing to chance on the clean path either.
         List<long> keys = new List<long>(rings.Keys);
         foreach (long key in keys) DestroyRing(key);
+        UnregisterHotKey(host, HOTKEY_ID_TAG);
+        UnregisterHotKey(host, HOTKEY_ID_UNTAG);
         if (trayShown) Shell_NotifyIconW(2, ref trayData);   // NIM_DELETE
         Log("clean exit");
         return 0;
