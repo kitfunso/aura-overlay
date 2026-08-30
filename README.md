@@ -57,13 +57,20 @@ picks it up on its next cycle. All runtime state lives in the same directory
 
 ## Autostart (opt-in, not installed by default)
 
-Nothing registers itself. If you want it on logon, run once:
+Nothing registers itself. If you want it on logon, run once in PowerShell:
 
 ```
-schtasks /Create /TN aura-overlay /SC ONLOGON /TR "node C:\path\to\aura-overlay\bin\start.js" /F
+Set-ItemProperty "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run" aura-overlay `
+  'powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "C:\path\to\aura-overlay\src\renderer-win.ps1"'
 ```
 
-Remove with `schtasks /Delete /TN aura-overlay /F`.
+Remove with `Remove-ItemProperty "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run" aura-overlay`.
+
+The per-user Run key needs no admin rights, which a tray app should not ask
+for. A `schtasks /SC ONLOGON` task does the same job but its creation is
+refused for a standard user ("Access is denied"). Explorer starts the entry,
+so the renderer does not need the `bin/start.js` double-hop here: it launches
+directly, hidden, and clears any stale `stop.flag` itself.
 
 ## Requirements
 
