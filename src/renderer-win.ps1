@@ -8,13 +8,32 @@
 # death or pid mismatch (hwnds recycle; rings.json entries carry the pid
 # that owned the hwnd when the brain saw it).
 # rings.json shape: [{"hwnd": 123, "pid": 456, "hex": "26bbd9"}, ...]
+# Step 4: resident app. The renderer is the process of record: it holds the
+# singleton mutex, owns the tray icon (raw Win32 Shell_NotifyIcon in the same
+# message loop; WinForms event handlers cannot fire while PowerShell is
+# blocked inside Run), spawns the brain as a child with --parent-pid, and
+# quits when stop.flag appears next to rings.json.
 param(
     [string]$RingsFile = "$env:LOCALAPPDATA\aura-overlay\rings.json",
     [int]$PollMs = 30,
     [int]$Thickness = 3,
-    [int]$MaxMinutes = 0    # 0 = run until stopped; tests pass a cap
+    [int]$MaxMinutes = 0,   # 0 = run until stopped; tests pass a cap
+    [switch]$NoBrain        # tests drive rings.json by hand
 )
 $ErrorActionPreference = 'Stop'
+
+# Singleton: one renderer per desktop session. A second start exits quietly
+# with one local log line (rule 6: never intrude, not even with an error box).
+$script:singletonMutex = New-Object System.Threading.Mutex($false, 'Local\AuraOverlayRenderer')
+$acquired = $false
+try { $acquired = $script:singletonMutex.WaitOne(0) }
+catch [System.Threading.AbandonedMutexException] { $acquired = $true }
+if (-not $acquired) {
+    $runtimeDir = Split-Path -Parent $RingsFile
+    New-Item -ItemType Directory -Force -Path $runtimeDir | Out-Null
+    Add-Content -Path (Join-Path $runtimeDir 'renderer.log') -Value ("{0} start skipped: another renderer holds the mutex" -f (Get-Date -Format s))
+    exit 0
+}
 
 Add-Type -ReferencedAssemblies @('System', 'System.Core', 'System.Web.Extensions') -TypeDefinition @'
 using System;
@@ -38,6 +57,19 @@ public static class RingHost {
     public struct RECT { public int Left; public int Top; public int Right; public int Bottom; }
     [StructLayout(LayoutKind.Sequential)]
     private struct MSG { public IntPtr hwnd; public uint message; public IntPtr wParam; public IntPtr lParam; public uint time; public int ptX; public int ptY; }
+    [StructLayout(LayoutKind.Sequential)]
+    private struct POINT { public int X; public int Y; }
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    private struct NOTIFYICONDATA {
+        public uint cbSize; public IntPtr hWnd; public uint uID; public uint uFlags;
+        public uint uCallbackMessage; public IntPtr hIcon;
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 128)] public string szTip;
+        public uint dwState; public uint dwStateMask;
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 256)] public string szInfo;
+        public uint uTimeoutOrVersion;
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 64)] public string szInfoTitle;
+        public uint dwInfoFlags;
+    }
 
     [DllImport("user32.dll")] private static extern bool SetProcessDPIAware();
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] private static extern ushort RegisterClassExW(ref WNDCLASSEX wc);
@@ -64,10 +96,21 @@ public static class RingHost {
     [DllImport("gdi32.dll")] private static extern int CombineRgn(IntPtr dest, IntPtr a, IntPtr b, int mode);
     [DllImport("gdi32.dll")] private static extern bool DeleteObject(IntPtr o);
     [DllImport("dwmapi.dll")] private static extern int DwmGetWindowAttribute(IntPtr h, int attr, out RECT rect, int size);
+    [DllImport("shell32.dll", CharSet = CharSet.Unicode)] private static extern bool Shell_NotifyIconW(uint msg, ref NOTIFYICONDATA data);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)] private static extern IntPtr LoadIconW(IntPtr inst, IntPtr name);
+    [DllImport("user32.dll")] private static extern IntPtr CreatePopupMenu();
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)] private static extern bool AppendMenuW(IntPtr menu, uint flags, UIntPtr id, string text);
+    [DllImport("user32.dll")] private static extern bool DestroyMenu(IntPtr menu);
+    [DllImport("user32.dll")] private static extern int TrackPopupMenu(IntPtr menu, uint flags, int x, int y, int reserved, IntPtr owner, IntPtr rect);
+    [DllImport("user32.dll")] private static extern bool GetCursorPos(out POINT pt);
+    [DllImport("user32.dll")] private static extern bool SetForegroundWindow(IntPtr h);
+    [DllImport("user32.dll")] private static extern bool PostMessageW(IntPtr h, uint msg, IntPtr w, IntPtr l);
 
     private const uint WM_TIMER = 0x0113;
     private const uint WM_DESTROY = 0x0002;
     private const uint WM_ERASEBKGND = 0x0014;
+    private const uint WM_TRAY = 0x8001;         // WM_APP + 1: tray callback
+    private const uint MENU_ID_QUIT = 1;
 
     private class Ring {
         public IntPtr Hwnd;       // the ring window we own
@@ -90,6 +133,10 @@ public static class RingHost {
     private static DateTime lastMtime = DateTime.MinValue;
     private static Dictionary<long, Ring> rings = new Dictionary<long, Ring>();
     private static JavaScriptSerializer json = new JavaScriptSerializer();
+    private static string stopFlagPath;
+    private static string logPath;
+    private static NOTIFYICONDATA trayData;
+    private static bool trayShown;
 
     private static IntPtr Proc(IntPtr hWnd, uint msg, IntPtr wParam, IntPtr lParam) {
         if (msg == WM_TIMER && hWnd == host) { Tick(); return IntPtr.Zero; }
@@ -102,8 +149,35 @@ public static class RingHost {
                 }
             }
         }
+        if (msg == WM_TRAY && hWnd == host) {
+            long evt = lParam.ToInt64() & 0xFFFF;
+            if (evt == 0x0205 || evt == 0x007B) ShowTrayMenu();   // WM_RBUTTONUP or WM_CONTEXTMENU
+            return IntPtr.Zero;
+        }
         if (msg == WM_DESTROY && hWnd == host) { PostQuitMessage(0); return IntPtr.Zero; }
         return DefWindowProcW(hWnd, msg, wParam, lParam);
+    }
+
+    private static void Log(string line) {
+        try { File.AppendAllText(logPath, DateTime.Now.ToString("s") + " " + line + Environment.NewLine); } catch { }
+    }
+
+    // The one deliberate SetForegroundWindow in this codebase: on our OWN
+    // hidden host window, only in response to the user clicking OUR tray
+    // icon (focus already moved to the taskbar with that click). Without it
+    // the popup menu never dismisses (MS KB135788). No foreign window is
+    // ever touched (rule 4).
+    private static void ShowTrayMenu() {
+        IntPtr menu = CreatePopupMenu();
+        if (menu == IntPtr.Zero) return;
+        AppendMenuW(menu, 0, (UIntPtr)MENU_ID_QUIT, "Quit aura-overlay");
+        POINT pt;
+        GetCursorPos(out pt);
+        SetForegroundWindow(host);
+        int cmd = TrackPopupMenu(menu, 0x100 | 0x2, pt.X, pt.Y, 0, host, IntPtr.Zero);  // TPM_RETURNCMD | TPM_RIGHTBUTTON
+        PostMessageW(host, 0, IntPtr.Zero, IntPtr.Zero);   // WM_NULL, same KB
+        DestroyMenu(menu);
+        if (cmd == (int)MENU_ID_QUIT) Quit();
     }
 
     private static int ColorRefFromHex(string hex) {
@@ -218,6 +292,10 @@ public static class RingHost {
     }
 
     private static void Tick() {
+        if (File.Exists(stopFlagPath)) {          // launcher --stop: same polled-file pattern as rings.json
+            try { File.Delete(stopFlagPath); } catch { }
+            Quit(); return;
+        }
         if (DateTime.UtcNow > deadline) { Quit(); return; }
         CheckRingsFile();
         List<long> keys = new List<long>(rings.Keys);
@@ -238,6 +316,10 @@ public static class RingHost {
         ringsPath = ringsFile;
         thickness = borderPx;
         deadline = (maxMinutes > 0) ? DateTime.UtcNow.AddMinutes(maxMinutes) : DateTime.MaxValue;
+        string runtimeDir = Path.GetDirectoryName(Path.GetFullPath(ringsFile));
+        stopFlagPath = Path.Combine(runtimeDir, "stop.flag");
+        logPath = Path.Combine(runtimeDir, "renderer.log");
+        try { File.Delete(stopFlagPath); } catch { }   // a stale flag must not kill a fresh start
 
         procRef = Proc;
         WNDCLASSEX wc = new WNDCLASSEX();
@@ -249,10 +331,23 @@ public static class RingHost {
         wc.lpszClassName = className;
         if (RegisterClassExW(ref wc) == 0) return 2;
 
-        // message-only host window (parent HWND_MESSAGE): owns the timer, never shows.
-        host = CreateWindowExW(0, className, "aura-overlay-host", 0, 0, 0, 0, 0, (IntPtr)(-3), IntPtr.Zero, hInstance, IntPtr.Zero);
+        // hidden top-level host window: owns the timer and the tray callback,
+        // never shown. (Was message-only; the tray menu needs a host that
+        // SetForegroundWindow accepts, and message-only windows are not it.)
+        host = CreateWindowExW(0x80 /* TOOLWINDOW */, className, "aura-overlay-host", 0x80000000u /* WS_POPUP */, 0, 0, 0, 0, IntPtr.Zero, IntPtr.Zero, hInstance, IntPtr.Zero);
         if (host == IntPtr.Zero) return 3;
         SetTimer(host, (IntPtr)1, (uint)pollMs, IntPtr.Zero);
+
+        trayData = new NOTIFYICONDATA();
+        trayData.cbSize = (uint)Marshal.SizeOf(typeof(NOTIFYICONDATA));
+        trayData.hWnd = host;
+        trayData.uID = 1;
+        trayData.uFlags = 0x1 | 0x2 | 0x4;   // NIF_MESSAGE | NIF_ICON | NIF_TIP
+        trayData.uCallbackMessage = WM_TRAY;
+        trayData.hIcon = LoadIconW(IntPtr.Zero, (IntPtr)32512);   // IDI_APPLICATION
+        trayData.szTip = "aura-overlay";
+        trayShown = Shell_NotifyIconW(0, ref trayData);           // NIM_ADD; failure is cosmetic (rule 6)
+        Log(trayShown ? "tray icon added" : "tray icon add FAILED");
 
         MSG msg;
         while (GetMessageW(out msg, IntPtr.Zero, 0, 0) > 0) {
@@ -263,11 +358,29 @@ public static class RingHost {
         // thread), but leave nothing to chance on the clean path either.
         List<long> keys = new List<long>(rings.Keys);
         foreach (long key in keys) DestroyRing(key);
+        if (trayShown) Shell_NotifyIconW(2, ref trayData);   // NIM_DELETE
+        Log("clean exit");
         return 0;
     }
 }
 }
 '@
 
+# Brain child: same lifetime as the renderer. The kill below is the clean
+# path; --parent-pid is the backstop so a crashed renderer never leaves a
+# brain running.
+$brainProc = $null
+if (-not $NoBrain) {
+    $brainScript = Join-Path $PSScriptRoot 'brain.js'
+    try {
+        $brainProc = Start-Process node -ArgumentList @(('"' + $brainScript + '"'), '--parent-pid', $PID) -WindowStyle Hidden -PassThru
+    } catch { $brainProc = $null }   # no node on PATH: rings still render from the last rings.json
+}
+
 $code = [AuraOverlay.RingHost]::Run($RingsFile, $PollMs, $Thickness, $MaxMinutes)
+
+if ($brainProc) {
+    try { if (-not $brainProc.HasExited) { Stop-Process -Id $brainProc.Id -Force } } catch { }
+}
+try { [void]$script:singletonMutex.ReleaseMutex() } catch { }
 exit $code
