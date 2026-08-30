@@ -2,7 +2,8 @@
 
 Cross-app color identity for Windows 11. Draws a thin colored ring around any
 window that belongs to a project, using the same repo = hue contract as
-[aura](../aura). Terminals with live Claude Code sessions get their exact repo
+[aura](https://github.com/kitfunso/aura). Terminals with live Claude Code
+sessions get their exact repo
 color automatically; any other window (browser docs, Slack) can be tagged to
 the current project with a hotkey.
 
