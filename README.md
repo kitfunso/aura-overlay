@@ -64,6 +64,11 @@ Remove with `schtasks /Delete /TN aura-overlay /F`.
 Windows 11, Node.js 18+, PowerShell 5.1. aura installed (without it you
 still get palette colors and manual tags).
 
+## Development
+
+Unit tests cover the brain's decision logic: `node --test test/brain.test.js`
+from the repo root.
+
 ## Resident cost (measured 2026-08-30, 10 rings, 5.5 min soak)
 
 - Steady state: 1.6 to 2.0% of one core combined (renderer + brain + scanner).

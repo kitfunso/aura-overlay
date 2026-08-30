@@ -9,7 +9,8 @@
 //   d. nothing.
 // One writer per shared file: this process writes rings.json and
 // tag-identities.json, NEVER tags.json (renderer-owned) and NEVER aura's
-// state.json (CLAUDE.md rule 2, read-only).
+// state.json (CLAUDE.md rule 2, read-only). config.json is seeded with
+// defaults on first run, then user-edited.
 // Modes: default loops (with --parent-pid watchdog); --once runs a single
 // cycle, prints the ring report, exits. --dir and --state override paths
 // for tests.
@@ -75,19 +76,36 @@ function newest_session(state) {
   return best;
 }
 
+// Newest session already updated at tag time (updatedAt at or before t,
+// unix ms). Freezing against this stops a session whose agent turns AFTER
+// the hotkey from stealing the tag while resolution is pending.
+function newest_session_at_or_before(state, t) {
+  if (!isFinite(t)) return null;
+  let best = null;
+  for (const id of Object.keys(state.sessions || {})) {
+    const s = state.sessions[id];
+    if (!(Date.parse(s.updatedAt) <= t)) continue;   // NaN parse also skips
+    if (!best || String(s.updatedAt) > String(best.updatedAt)) best = s;
+  }
+  return best;
+}
+
 function tag_key(tag) {
   return String(tag.hwnd) + ":" + String(tag.pid) + ":" + String(tag.taggedAt);
 }
 
-// Freeze new tags to the newest aura session; prune identities whose tag is
-// gone. A tag with no session yet stays unresolved and is retried next cycle.
+// Freeze new tags to the newest aura session AT TAG TIME (updatedAt at or
+// before taggedAt). If no session predates the tag, fall back to newest
+// overall so an early tag still resolves once a session appears. Prune
+// identities whose tag is gone; a tag with no session at all stays
+// unresolved and is retried next cycle.
 function resolve_tag_identities(tags, state, identities) {
   const next = {};
   let changed = false;
   for (const tag of tags) {
     const key = tag_key(tag);
     if (identities[key]) { next[key] = identities[key]; continue; }
-    const session = newest_session(state);
+    const session = newest_session_at_or_before(state, Number(tag.taggedAt)) || newest_session(state);
     if (session && session.repoId) {
       next[key] = { repoId: session.repoId, branch: session.branch || null };
       changed = true;
@@ -171,8 +189,15 @@ function run_cycle(ctx, windowsRaw) {
     // torn read: keep last known tags rather than wrongly pruning identities
   }
 
+  // config.json is user-edited: normalize the shape so a bad edit degrades
+  // to defaults for that cycle instead of crashing every cycle (rule 6)
   const configRead = read_json(path.join(ctx.args.dir, "config.json"));
-  const config = (configRead.ok && configRead.value) ? configRead.value : CONFIG_DEFAULTS;
+  const configRaw = (configRead.ok && configRead.value && typeof configRead.value === "object")
+    ? configRead.value : {};
+  const config = {
+    paletteProcesses: Array.isArray(configRaw.paletteProcesses)
+      ? configRaw.paletteProcesses : CONFIG_DEFAULTS.paletteProcesses,
+  };
 
   const resolved = resolve_tag_identities(ctx.tags, state, ctx.identities);
   ctx.identities = resolved.identities;
@@ -211,6 +236,9 @@ function create_scanner() {
   const child = spawn("powershell.exe",
     ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", script, "-Loop"],
     { windowsHide: true, stdio: ["pipe", "pipe", "ignore"] });
+  // async EPIPE from a dying scanner surfaces on the stream, not the write
+  // call; without a handler it is an uncaught exception that kills the brain
+  child.stdin.on("error", function () {});
   const rl = readline.createInterface({ input: child.stdout });
   const pending = [];
   const scanner = { dead: false, child: child };
@@ -254,7 +282,18 @@ function create_scanner() {
 
 function main() {
   const args = parse_args(process.argv);
-  const ctx = init_context(args);
+  let ctx;
+  try {
+    ctx = init_context(args);
+  } catch (err) {
+    // startup is the one place rule 6 silence hurts: dying here leaves no
+    // rings AND no trace anywhere. One log line, then exit nonzero.
+    try {
+      fs.appendFileSync(path.join(args.dir, "brain.log"),
+        new Date().toISOString() + " init failed: " + (err && err.message ? err.message : err) + "\n");
+    } catch (logErr) {}
+    process.exit(1);
+  }
 
   if (args.once) {
     const windows = scan_once();
@@ -285,4 +324,13 @@ function main() {
   tick();                                   // first rings fast, not after 2 s
 }
 
-main();
+module.exports = {
+  parse_args: parse_args,
+  newest_session: newest_session,
+  newest_session_at_or_before: newest_session_at_or_before,
+  resolve_tag_identities: resolve_tag_identities,
+  build_rings: build_rings,
+  tag_key: tag_key,
+};
+
+if (require.main === module) main();

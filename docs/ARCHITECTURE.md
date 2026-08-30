@@ -25,7 +25,9 @@ Two resident processes, one shared data file:
 
 ## Data Flow (primary loop)
 
-1. brain scan -> window list [{hwnd, pid, process, title}].
+1. brain scan -> window list [{hwnd, pid, process}]. Titles are used inside
+   the scanner only as a liveness filter and never emitted (they can hold
+   prompt text).
 2. Identity per window, first match wins:
    a. `tags.json` entry for the hwnd (+pid match) whose frozen identity
       exists in `tag-identities.json` -> that repoId/branch. Unresolved
@@ -52,11 +54,14 @@ Two resident processes, one shared data file:
 renderer also prunes entries whose window or process is gone. The brain
 NEVER writes `tags.json`.
 
-The brain resolves each tag ONCE to the newest aura session's identity and
-freezes it in `tag-identities.json`, keyed `hwnd:pid:taggedAt` (a tag must
-not change color when the user switches repos). While no aura session
-exists the tag stays unresolved: no ring, and the brain retries every
-cycle until one appears. The brain prunes identities whose tag entry is
+The brain resolves each tag ONCE and freezes it in `tag-identities.json`,
+keyed `hwnd:pid:taggedAt` (a tag must not change color when the user
+switches repos). It freezes to the newest aura session AT TAG TIME
+(`updatedAt` at or before `taggedAt`), so a session whose agent turns
+between the hotkey and the resolving cycle cannot steal the tag; if no
+session predates the tag, it falls back to the newest overall. While no
+aura session exists the tag stays unresolved: no ring, and the brain
+retries every cycle until one appears. The brain prunes identities whose tag entry is
 gone. The renderer never writes `tag-identities.json`.
 
 ## Files
@@ -66,7 +71,7 @@ gone. The renderer never writes `tag-identities.json`.
 | `%LOCALAPPDATA%/aura-overlay/rings.json` | brain | renderer |
 | `%LOCALAPPDATA%/aura-overlay/tags.json` | renderer | brain |
 | `%LOCALAPPDATA%/aura-overlay/tag-identities.json` | brain | brain |
-| `%LOCALAPPDATA%/aura-overlay/config.json` | user | brain |
+| `%LOCALAPPDATA%/aura-overlay/config.json` | brain seeds defaults once; user edits after | brain |
 | `%LOCALAPPDATA%/aura-overlay/stop.flag` | launcher `--stop` | renderer (deletes) |
 | `%LOCALAPPDATA%/aura/state.json` | aura (Lane A) ONLY | brain, read-only |
 

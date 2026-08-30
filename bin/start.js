@@ -28,8 +28,16 @@ function start_renderer() {
     "$p = Start-Process powershell -WindowStyle Hidden -PassThru -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-File'," + rendererQuoted + "); " +
     "Start-Sleep -Milliseconds 900; " +
     "if ($p.HasExited) { Write-Output ('exited ' + $p.Id) } else { Write-Output ('running ' + $p.Id) }";
-  const out = execFileSync("powershell.exe", ["-NoProfile", "-Command", command],
-    { windowsHide: true, timeout: 15000 }).toString().trim();
+  let out;
+  try {
+    out = execFileSync("powershell.exe", ["-NoProfile", "-Command", command],
+      { windowsHide: true, timeout: 15000 }).toString().trim();
+  } catch (err) {
+    console.log("could not launch the renderer: " + (err && err.message ? err.message : err));
+    console.log("check that powershell.exe is on PATH, then retry");
+    process.exitCode = 1;
+    return;
+  }
   if (out.indexOf("running ") === 0) {
     console.log("renderer pid " + out.slice("running ".length));
   } else if (out.indexOf("exited ") === 0) {

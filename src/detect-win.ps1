@@ -67,8 +67,10 @@ if ($Loop) {
         if ($null -eq $line) { break }     # stdin closed: the brain is gone
         if ($line -eq 'exit') { break }
         if ($line -eq 'scan') {
-            $json = '[]'
-            try { $json = Get-ScanJson } catch { $json = '[]' }
+            # null = failed scan (the brain keeps its last rings); '[]' would
+            # read as a real empty desktop and destroy every ring
+            $json = 'null'
+            try { $json = Get-ScanJson } catch { $json = 'null' }
             [Console]::Out.WriteLine($json)
             [Console]::Out.Flush()
         }

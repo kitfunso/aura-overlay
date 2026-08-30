@@ -305,6 +305,10 @@ public static class RingHost {
                 want.Target = (IntPtr)Convert.ToInt64(d["hwnd"]);
                 want.Pid = Convert.ToUInt32(d["pid"]);
                 want.Hex = Convert.ToString(d["hex"]);
+                // bad hex must throw HERE, inside this per-entry catch: in
+                // CreateRing it fires after CreateWindowEx (leaked hwnd) and
+                // aborts Reconcile before lastMtime moves (re-thrown per tick)
+                ColorRefFromHex(want.Hex);
                 desired[(long)want.Target] = want;   // duplicate hwnds: last wins
             } catch { }                              // one bad entry never kills the set
         }
@@ -515,7 +519,15 @@ if (-not $NoBrain) {
     $brainScript = Join-Path $PSScriptRoot 'brain.js'
     try {
         $brainProc = Start-Process node -ArgumentList @(('"' + $brainScript + '"'), '--parent-pid', $PID) -WindowStyle Hidden -PassThru
-    } catch { $brainProc = $null }   # no node on PATH: rings still render from the last rings.json
+    } catch {
+        # no node on PATH: rings still render from the last rings.json.
+        # Log it, or "no rings ever update" has no visible cause anywhere.
+        $brainProc = $null
+        try {
+            $rtDir = Split-Path -Parent $RingsFile
+            Add-Content -Path (Join-Path $rtDir 'renderer.log') -Value ("{0} brain spawn FAILED: {1}" -f (Get-Date -Format s), $_.Exception.Message)
+        } catch { }
+    }
 }
 
 $code = [AuraOverlay.RingHost]::Run($RingsFile, $PollMs, $Thickness, $MaxMinutes)
