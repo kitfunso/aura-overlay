@@ -113,6 +113,7 @@ public static class RingHost {
     [DllImport("user32.dll")] private static extern bool RegisterHotKey(IntPtr h, int id, uint mods, uint vk);
     [DllImport("user32.dll")] private static extern bool UnregisterHotKey(IntPtr h, int id);
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] private static extern int GetClassNameW(IntPtr h, StringBuilder sb, int max);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)] private static extern uint RegisterWindowMessageW(string name);
 
     private const uint WM_TIMER = 0x0113;
     private const uint WM_DESTROY = 0x0002;
@@ -148,6 +149,8 @@ public static class RingHost {
     private static string logPath;
     private static NOTIFYICONDATA trayData;
     private static bool trayShown;
+    private static uint taskbarCreatedMsg;   // broadcast when Explorer (re)starts
+    private static bool tagsDirty;           // a failed tags.json save retries next tick
 
     private class Tag { public long Hwnd; public uint Pid; public long TaggedAt; }
     private static string tagsPath;
@@ -174,6 +177,15 @@ public static class RingHost {
             long id = wParam.ToInt64();
             if (id == HOTKEY_ID_TAG) TagForeground();
             if (id == HOTKEY_ID_UNTAG) UntagForeground();
+            return IntPtr.Zero;
+        }
+        // An Explorer restart kills every tray icon with it; re-add ours or
+        // the Quit menu is gone until the next full restart. The zero guard
+        // matters: an unregistered message id of 0 would match WM_NULL, which
+        // ShowTrayMenu posts to this window after every menu.
+        if (taskbarCreatedMsg != 0 && msg == taskbarCreatedMsg && hWnd == host) {
+            trayShown = Shell_NotifyIconW(0, ref trayData);   // NIM_ADD
+            Log(trayShown ? "tray icon re-added after Explorer restart" : "tray icon re-add FAILED");
             return IntPtr.Zero;
         }
         if (msg == WM_DESTROY && hWnd == host) { PostQuitMessage(0); return IntPtr.Zero; }
@@ -361,6 +373,12 @@ public static class RingHost {
     }
 
     private static void SaveTags() {
+        tagsDirty = true;
+        FlushTags();
+    }
+
+    private static void FlushTags() {
+        if (!tagsDirty) return;
         try {
             List<object> list = new List<object>();
             foreach (Tag t in tags) {
@@ -374,7 +392,11 @@ public static class RingHost {
             // file mid-write (it would wrongly prune every frozen identity).
             if (File.Exists(tagsPath)) File.Replace(tmp, tagsPath, null);
             else File.Move(tmp, tagsPath);
+            tagsDirty = false;
         } catch { }
+        // still dirty: the brain likely held the file open for its read.
+        // Tick calls FlushTags again 30 ms later; a tag is never lost to
+        // one sharing violation.
     }
 
     private static bool IsOurWindow(IntPtr h) {
@@ -424,6 +446,7 @@ public static class RingHost {
         if (DateTime.UtcNow > deadline) { Quit(); return; }
         CheckRingsFile();
         PruneTags();
+        FlushTags();   // retry a save that lost a sharing race last tick
         List<long> keys = new List<long>(rings.Keys);
         deferCtx = (keys.Count > 0) ? BeginDeferWindowPos(keys.Count) : IntPtr.Zero;
         foreach (long key in keys) {
@@ -481,6 +504,7 @@ public static class RingHost {
         trayData.szTip = "aura-overlay";
         trayShown = Shell_NotifyIconW(0, ref trayData);           // NIM_ADD; failure is cosmetic (rule 6)
         Log(trayShown ? "tray icon added" : "tray icon add FAILED");
+        taskbarCreatedMsg = RegisterWindowMessageW("TaskbarCreated");
 
         tagsPath = Path.Combine(runtimeDir, "tags.json");
         LoadTags();
