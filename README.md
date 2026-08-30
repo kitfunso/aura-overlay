@@ -54,7 +54,7 @@ its next cycle. All runtime state lives in the same directory
 Nothing registers itself. If you want it on logon, run once:
 
 ```
-schtasks /Create /TN aura-overlay /SC ONLOGON /TR "node C:\Users\skf_s\aura-overlay\bin\start.js" /F
+schtasks /Create /TN aura-overlay /SC ONLOGON /TR "node C:\path\to\aura-overlay\bin\start.js" /F
 ```
 
 Remove with `schtasks /Delete /TN aura-overlay /F`.
@@ -66,8 +66,8 @@ still get palette colors and manual tags).
 
 ## Development
 
-Unit tests cover the brain's decision logic: `node --test test/brain.test.js`
-from the repo root.
+Unit tests cover the brain's decision logic and the color-contract pin:
+`node --test test/brain.test.js test/contract.test.js` from the repo root.
 
 ## Resident cost (measured 2026-08-30, 10 rings, 5.5 min soak)
 
