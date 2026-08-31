@@ -32,9 +32,10 @@ Or quit from the tray icon (right-click the aura-overlay icon, Quit).
 In priority order, per window:
 
 1. A tagged window (frozen identity from tag time).
-2. A terminal window whose newest aura session maps it to a repo
-   (reads aura's `state.json`, read-only). Sessions outside a git repo are
-   skipped: no repo, no color, the same rule aura uses for the window frame.
+2. A terminal window whose newest aura session carries an identity: a repo,
+   a tag, or the tab's own name (reads aura's `state.json`, read-only).
+   Sessions aura left colorless are skipped, the same rule aura uses for
+   the window frame.
 3. A process named in `paletteProcesses` (stable per-process palette color).
    Empty by default, so nothing outside your Claude Code terminals and your
    own tags is ever ringed.

@@ -47,13 +47,19 @@ function parent_alive(pid) {
   catch (err) { return err.code === "EPERM"; }
 }
 
-// Skips off-repo sessions, so a window shared by a repo tab and a bare shell
-// keeps the repo's ring (same precedence Lane A gives the window frame).
+// Lane A writes hasColor from the tab-name release on; older state only carries
+// isRepo, and a repo was the only thing that got a color back then.
+function session_has_color(session) {
+  return session.hasColor === undefined ? session.isRepo !== false : session.hasColor === true;
+}
+
+// Skips colorless sessions, so a window shared by a named tab and a bare shell
+// keeps the named session's ring (same precedence Lane A gives the frame).
 function newest_session_for_hwnd(state, hwnd) {
   let best = null;
   for (const id of Object.keys(state.sessions || {})) {
     const s = state.sessions[id];
-    if (s.hwnd !== hwnd || s.isRepo === false) continue;
+    if (s.hwnd !== hwnd || !session_has_color(s)) continue;
     if (!best || String(s.updatedAt) > String(best.updatedAt)) best = s;
   }
   return best;

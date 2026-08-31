@@ -67,9 +67,11 @@ windows). Docs: `docs/ARCHITECTURE.md`; spike evidence: `aura/docs/LANE-B.md`.
 - Spawning a long-lived child that must outlive a dying process tree with
   plain `spawn`: on Windows it dies with the tree (measured in aura).
   Launchers use the `Start-Process -WindowStyle Hidden` double-hop.
-- Ringing a terminal window with no project: no repo means no color anywhere,
-  so the brain skips sessions carrying `isRepo: false`. A colored window must
-  always mean a repo, in both lanes.
+- Ringing a terminal window with no identity: no color in Lane A means no ring
+  here, so the brain skips sessions where `hasColor` is not true. Read
+  `hasColor`, never `isRepo`: aura colors a named tab too, and that session is
+  `isRepo: false`. State written before aura shipped `hasColor` carries only
+  `isRepo`, so the check falls back to it.
 - Trusting a hwnd across time: handles recycle. Tags and ring entries carry
   hwnd + pid; the renderer verifies the pid still owns the hwnd before
   ringing, and everything is pruned the moment the window or process is

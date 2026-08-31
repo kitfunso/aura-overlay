@@ -35,10 +35,12 @@ Two resident processes, one shared data file:
       exists in `tag-identities.json` -> that repoId/branch. Unresolved
       tags get no ring yet.
    b. Terminal process (aura's allowlist) with sessions in aura state.json
-      on that hwnd -> newest session's repoId/branch. Sessions with
-      `isRepo: false` are skipped, so a window whose only sessions are bare
-      shells gets no ring (no repo, no color - Lane A does the same with the
-      window frame), and a repo tab outranks a newer shell tab beside it.
+      on that hwnd -> newest session's repoId/branch. Sessions aura left
+      colorless are skipped, so a window whose only sessions are bare shells
+      gets no ring (no identity, no color - Lane A does the same with the
+      window frame), and a colored tab outranks a bare one beside it. The
+      flag is `hasColor`; state written before aura shipped it only carries
+      `isRepo`, and back then a repo was the only thing that got a color.
    c. Process name in `config.json` paletteProcesses -> process name as
       repoId (deterministic palette color). The shipped default is EMPTY:
       a default of ["chrome","slack"] made a fresh install ring the browser
@@ -95,7 +97,7 @@ state.
 
 `src/color.js` is a byte-identical copy of aura's. The consumed
 `state.json` interface is pinned to `sessions[id].{hwnd, repoId, branch,
-isRepo, updatedAt}`. If aura changes it, this repo
+isRepo, hasColor, updatedAt}`. If aura changes it, this repo
 updates the same day; the hash check in CI-less reality is the Step 1
 verify command in the MVP plan.
 

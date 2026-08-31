@@ -145,3 +145,23 @@ test("a repo tab outranks a newer bare shell in the same window", function () {
     [{ hwnd: 7, pid: 70, process: "WindowsTerminal" }], state, [], {}, CONFIG);
   assert.deepEqual(report.map(function (r) { return [r.hwnd, r.repoId]; }), [[7, "r"]]);
 });
+
+test("a session colored by its tab name gets a ring, repo or not", function () {
+  const state = {
+    sessions: {
+      named: { repoId: "window:intraday", branch: null, isRepo: false, hasColor: true, updatedAt: iso(T0), hwnd: 7 },
+    },
+  };
+  const report = brain.build_rings(
+    [{ hwnd: 7, pid: 70, process: "WindowsTerminal" }], state, [], {}, CONFIG);
+  assert.deepEqual(report.map(function (r) { return [r.hwnd, r.repoId]; }), [[7, "window:intraday"]]);
+});
+
+test("a colorless session is skipped even when hasColor says so explicitly", function () {
+  const state = {
+    sessions: { s: { repoId: "C:/Users/x", branch: null, isRepo: false, hasColor: false, updatedAt: iso(T0), hwnd: 7 } },
+  };
+  const report = brain.build_rings(
+    [{ hwnd: 7, pid: 70, process: "WindowsTerminal" }], state, [], {}, CONFIG);
+  assert.equal(report.length, 0);
+});
